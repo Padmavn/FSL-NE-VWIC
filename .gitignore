@@ -1,0 +1,33 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.env/
+env/
+ENV/
+
+# Model weights & large binaries (critical so you don't push heavy weights)
+*.pth
+*.pt
+*.pkl
+*.h5
+*.onnx
+*.tar.gz
+*.zip
+
+# Datasets and logs
+*.csv
+data/
+datasets/raw/
+runs/
+logs/
+*.log
+
+# Editor & OS files
+.DS_Store
+.vscode/
+.idea/

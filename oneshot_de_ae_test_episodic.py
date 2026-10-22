@@ -1,10 +1,26 @@
-
 """
-History:
-Created on to test the classifier part of disentangled autoencoder with any one shot dataset.
-For beta-vae with classifier the weight calculation part should leave the style part
-Modified to pass the parameter shuffle as False to take only the last few elements as validation set. If it is True  then the validation set may contain few images on which the model was trained already.
-num_classes_test denotes the number of test classes in the episodic testing(N-way argument) and tot_num_test_classes denotes the number of test classes of the dataset.The weight linear layers have to use num_classes_from_test
+Episodic (N-way K-shot) testing of the disentangled auto-encoder (DE_AutoEncoder).
+
+For every test episode N classes are sampled; K support images per class are encoded, the
+L2-normalised mean content feature of each class becomes the weight vector of a new cosine-similarity
+classifier (replacing `class_linear_2`), and the query images of those classes are classified.
+The mean accuracy and its 95% confidence interval over `test_episodes` are printed for each of
+`outer_episodes` repetitions, followed by the average over repetitions and the inference time.
+
+Modes (-mc): 1 = classical FSL on the novel (test) classes only; 2 = generalized FSL, where the episode
+contains both base (training) and novel classes. Mode 0 (not used in the paper) evaluates the training
+classes on their validation images.
+-nct is N; if not given, all test classes of the dataset are used (Omniglot 423, IndicSixPrinted 441).
+-spc is K (support images per class). -qpc is the number of query images per class; if not given, all
+remaining images of the class (excluding the support images) are used.
+The episodes are fixed (the dataset code seeds Python’s random generator with 1), so the same checkpoint gives the same accuracies on every run.
+The model must be built exactly as in training (-cs, -nic, -noc, is_max_pool_after_last_conv=1,
+is_same_style_dim=1; -cs[0] is the content code size used in training); the checkpoint is given with -sdf.
+
+Example (Omniglot, 5-way 1-shot, novel classes):
+  python oneshot_de_ae_test_episodic.py -df /path/to/omniglot_resized -ds omniglot -mc 1 -cs 512 \
+         -nic 1 128 256 512 -noc 128 256 512 1024 -sdf ./saved_models/<checkpoint>.pth \
+         -nct 5 -spc 1 -oe 1 -te <test_episodes>
 """
 import torch
 import random
@@ -16,10 +32,7 @@ import argparse
 import time
 import scipy as sp
 import scipy.stats
-#sys.path.insert(0,'..')
-#from disent_auto_encoder_github import DE_AutoEncoder
-#import OneShot_Dataset_new as tg
-from models.disent_auto_encoder import DE_AutoEncode #For beta VAE with cos-sim with content and style rep
+from models.disent_auto_encoder import DE_AutoEncoder
 from datasets import OneShot_Dataset as tg
 
 
@@ -69,6 +82,8 @@ def get_mean_for_test_train_new(dataset_test_train,sample_per_class):
 def mean_confidence_interval(data, confidence=0.95):
     a = 1.0*np.array(data)
     n = len(a)
+    if n <= 1:
+        return (float(a[0]), 0.0) if n == 1 else (0.0, 0.0)
     m, se = np.mean(a),scipy.stats.sem(a)
     h = se * sp.stats.t.ppf((1+confidence)/2., n-1)
     return m,h                              
@@ -182,19 +197,17 @@ def main():
                     #print(i,selected_char_dict[i])
                     #tmp = test_class_mean_feat_vect_list[selected_char_dict[i]] # to load only the selected classes when we find fc for all classes
                     new_weight[i] = tmp / tmp.norm(p=2)
-                    #new_weight[i] = tmp #temporarily removing the normalization(no change in the test accuracy after removing the normalization(as i have used only one sample per class))
 
                 #weight = torch.cat((imgautoencoder.classifier.fc.weight.data, new_weight.cuda()))
                 weight =  new_weight.to(device)#cuda()
             
             
-            #temporarily commenting this too(uncommented again)
             
             if(is_all):#validation and test dataset
                 old_weight= weight_train.clone()
                 for i in range(num_classes_from_train):
                     tmp = old_weight[selected_char_dict_train[i]] # to load only the selected classes when we find fc for all classes
-                    new_weight_train[i] = tmp #temporarily removing the normalization(no change in the test accuracy after removing the normalization(as i have used only one sample per class))
+                    new_weight_train[i] = tmp #the trained weights are used as they are (no re-normalisation)
                 #weight = torch.cat((imgautoencoder.class_linear_2.weight.data, new_weight.cuda()))
                 #imgautoencoder.class_linear_2 = nn.Linear(code_size[0], num_classes_test+1200, bias=False)
                 #imgautoencoder.class_linear_2.weight.data = weight
@@ -210,7 +223,7 @@ def main():
                 
             else:
                 #in case where valaidation set alone is provided no need to change the linear layer and it's weight
-                old_weight= weight_train.clone()
+                old_weight= weight_train.clone()#original trained weights (class_linear_2 is replaced after every episode)
                 for i in range(num_classes_from_train):
                     tmp = old_weight[selected_char_dict_train[i]] # to load only the selected classes when we find fc for all classes
                     new_weight_train[i] = tmp 
@@ -274,7 +287,7 @@ def main():
                 acc = running_corrects.double() / len(dataloader.dataset)
 
                 if((test_episodes < 50) or (test_episodes <= 100 and (cur_test_ep%10)==0)):
-                    print('test epsisode:{},accuracy :{:.4f},correct/total:{}/{}'.format(cur_test_ep,acc,running_corrects,len(dataloader.dataset)))
+                    print('test episode:{},accuracy :{:.4f},correct/total:{}/{}'.format(cur_test_ep,acc,running_corrects,len(dataloader.dataset)))
                 count= len(dataloader.dataset)
 
                 
@@ -310,7 +323,7 @@ def main():
 if __name__=="__main__":    
     parser = argparse.ArgumentParser(description='Testing disentangled vae classifier')
     parser.add_argument('-df','--data_path', help='data path',required = True,  type=str)
-    parser.add_argument('-mc','--classify_mode', help='mode of classification(train-0,test-1,both-2)', default=1,type=int)
+    parser.add_argument('-mc','--classify_mode', help='mode of classification(train-0,test-1,both-2)', default=1, choices=[0,1,2], type=int)
     parser.add_argument('-cs','--code_size', nargs='+', type=int, default=[1000,500])
     parser.add_argument('-is','--input_size',help='dimension of the input image',default=28,type=int)      
     parser.add_argument('-nic','--no_of_in_channels', nargs='+', type=int, default=[1,128,256,512])
@@ -324,7 +337,9 @@ if __name__=="__main__":
     parser.add_argument('-qpc','--query_per_class', help='how many query images to be taken from each class', default = -1, type=int)
     parser.add_argument('-nct','--num_test_class', help='N-way', default = -1, type=int)
     
+    
     args = vars(parser.parse_args())
+    
     is_all=is_testclass=False
     datafilepath=args['data_path']
     code_size=args['code_size']
@@ -372,6 +387,7 @@ if __name__=="__main__":
         train_num = -1 #if this value is -1 then the last few images are taken as validation.Used mainly to handle the case where the number of images per class varies
         val_num = -5 #no of images taken for validation set from training set folders
         no_of_datafolders = 2
+        no_of_in_channels[0] = 3
         input_size = 50
         cls_name_folders = 2
         data_trans = transforms.Compose([

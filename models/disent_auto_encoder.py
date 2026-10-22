@@ -1,15 +1,71 @@
-#***************************************************************************************************************************
-#created for disentangling style from content by using a cos-sim classifier
-#Adding is_max_pool_after_last_conv flag to explore both options
-#Adding scaling (self.s) cosine similarity score as per imprinting of weights paper(trainable scalar to scale the inner product)
-#Removing sigmoid to use BCE with logits 
-#Have added is_same_style_dim to use same or different dimension size for style and content.The style dim is passed as code_size[1]
-#Adding 3 more batch normalization layers and applying it before relu and maxpool(on 10/06/21)
-#In linear layer of the classifier set the bias as False to consider only the weights 
-#Added is_train parameter to omit decoding part during testing.
-#Added pure_norm flag to include normalization in the gradient, defaults to False that use inline weight normalization as used in the original paper
-#is_max_pool_after_last_conv is option affects only 4th layer and for other layers maxpool is applied and the model supports either 3 or 4 CNN layer encoder/decoder architecture
-#***************************************************************************************************************************
+"""
+DE_AutoEncoder: a convolutional variational auto-encoder that separates the
+representation of an image into a *content* code and a *style* code, with a
+cosine-similarity classifier attached to the content code.
+
+The overall design (an auto-encoder whose latent code is split into a content part and a style
+part, used for few-shot classification) is based on the master's thesis "Few-shot Classification
+by Learning Disentangled Representations". No source code was available for that work, so this
+is an independent implementation, not a copy. It differs from the thesis in that it uses a
+Beta-VAE and a cosine-similarity classifier trained with a different loss, instead of a standard
+VAE with an episodic classifier.
+
+Architecture
+  * Encoder    : 3 or 4 conv layers (3x3, padding 1). Each is applied as conv -> BatchNorm -> max-pool
+                 (2x2, ceil_mode=True) -> ReLU; the max-pool is skipped only for the last layer of a
+                 4-layer encoder when `is_max_pool_after_last_conv=0`. The flattened features pass
+                 through dropout and then through four linear layers that give the mean and log-variance
+                 of the content distribution and of the style distribution (reparameterization trick
+                 of the Beta-VAE).
+  * Decoder    : a linear layer followed by transposed convolutions. It takes the concatenated
+                 [content, style] samples and returns the reconstructed image as raw values
+                 (no sigmoid), so the reconstruction loss should use logits, e.g. BCE-with-logits.
+  * Classifier : a single bias-free linear layer on the L2-normalised content code, i.e. a
+                 cosine-similarity classifier. The normalised code can be multiplied by a trainable
+                 scalar (`scale`, initial value 10), following the imprinted-weights approach
+                 (Qi et al., "Low-Shot Learning with Imprinted Weights", CVPR 2018). The in-place
+                 weight normalisation of the classifier (`pure_norm=False`) is adapted from the
+                 `weight_norm` method of https://github.com/YU1ut/imprinted-weights, an unofficial
+                 PyTorch implementation of that paper.
+
+Args
+  code_size                  : [content_dim, style_dim]. code_size[0] is the content dimension (also the
+                               classifier input). code_size[1] is the style dimension and is read only
+                               when `is_same_style_dim=0`.
+  input_size                 : height/width of the square input image (28 for Omniglot).
+  no_of_in_channels,
+  no_of_out_channels         : per-layer conv channels; their length (3 or 4) sets the depth.
+  num_classes                : number of training classes (outputs of the classifier).
+  is_max_pool_after_last_conv: affects only the last (4th) conv layer of a 4-layer encoder:
+                               1 = it is max-pooled too; 0 = it is not (the setting used for Omniglot).
+                               The first three layers always pool, so the flag has no effect on a 3-layer encoder.
+  drop_prob                  : dropout probability on the flattened encoder features.
+  scale                      : multiply the normalised content code by the trainable scalar `self.s`.
+  is_same_style_dim          : 1 = style code has the same size as the content code;
+                               0 = style size is code_size[2].
+  is_train                   : 1 = forward() also decodes and returns the reconstruction;
+                               0 = decoder is skipped (testing). This is a constructor flag and is
+                               independent of nn.Module.train() / eval().
+  pure_norm                  : False (default) = classifier weights are normalised in place before
+                               each forward pass, as in the original implementation used for the
+                               published results; True = normalisation is part of the computation graph.
+
+forward() returns
+  is_train=1 : (reconstruction, class_scores, mu_content, logvar_content, mu_style, logvar_style);
+               the class scores are computed from the sampled content code.
+  is_train=0 : (class_scores, mu_content, logvar_content, mu_style, logvar_style);
+               the class scores are computed from the mean of the content code.
+
+Supported sizes: the decoder output must equal `input_size` or be at least `input_size + 3`
+(it is then cropped); otherwise a ValueError is raised. With 4 layers and
+is_max_pool_after_last_conv=0 this holds for 28, 50 and 105 but not for 32 or 64
+(use is_max_pool_after_last_conv=1 or a 3-layer encoder for those).
+
+The constructor raises a ValueError if the number of conv layers is not 3 or 4, if
+no_of_in_channels and no_of_out_channels differ in length or do not chain
+(no_of_in_channels[i+1] == no_of_out_channels[i]), or if code_size has no style entry when
+is_same_style_dim=0.
+"""
 import math
 import torch
 import torch.nn as nn
@@ -18,7 +74,6 @@ import torch.nn.functional as F
 
 class DE_AutoEncoder(nn.Module):    
     def __init__(self, code_size=[1024],input_size=28,no_of_in_channels=[1,128,256,512],no_of_out_channels=[128,256,512,1024],num_classes=1200,is_max_pool_after_last_conv=0,drop_prob=0.25,scale=True,is_same_style_dim=1,is_train=1,pure_norm= False):
-        
         n_layers = len(no_of_in_channels)
         if n_layers not in (3, 4):
             raise ValueError(f"The model supports 3 or 4 conv layers, got {n_layers}.")
@@ -60,11 +115,11 @@ class DE_AutoEncoder(nn.Module):
         
         # To handle different input size
         # output size (for different input size) after the encoder's ceil_mode max-pools: 
-        # ceil(n / 2^k),where k = no_of_layers (last-layer maxpool on) or no_of_layers - 1 (off).
+        # ceil(n / 2^k),where k = no_of_layers (3-layer model, or 4 layers with last-layer maxpool on) or no_of_layers - 1 (4 layers, maxpool off).
         if(self.no_of_layers<4 or self.is_max_pool_after_last_conv):
             self.input_to_linear = math.ceil(self.input_size/pow(2,self.no_of_layers))
             
-        else:
+        else:#omniglot case
             self.input_to_linear = math.ceil(self.input_size/pow(2,self.no_of_layers-1))
         #print("o/p channels:",self.input_to_linear)
         
@@ -198,7 +253,7 @@ class DE_AutoEncoder(nn.Module):
             raise ValueError(
                 f"Decoder output is {tuple(out.shape[-2:])} but expected "
                 f"({self.input_size}, {self.input_size}). The fixed 3-pixel crop only "
-                "supports the input sizes that generate the decoder output same as input size or atleast input_size+3."
+                "supports the input sizes that generate the decoder output same as input size or at least input_size+3."
             )
         
         return out

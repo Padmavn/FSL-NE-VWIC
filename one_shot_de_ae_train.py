@@ -1,6 +1,22 @@
 """
-To train the disentangled auto encoder with any dataset
-Divided the weights of the loss values of Beta-VAE as they overweigh the loss of classifier
+Training script for the disentangled auto-encoder (DE_AutoEncoder).
+
+Combined loss:
+  1. BCE-with-logits between the reconstruction and the input,
+  2. KL divergence of the style distribution (weight beta_style),
+  3. KL divergence of the content distribution (weight beta_content),
+  4. cross-entropy of the cosine-similarity classifier on the content code.
+Terms 1-3 (Beta-VAE) are divided by lambda_val because they outweigh the classification loss.
+BCE is summed over pixels and averaged over the batch; the KL terms are averaged (torch.mean) over
+batch and latent dimensions, so beta_style / beta_content are relative to this scaling.
+
+Datasets (-ds): 'omniglot' (rotation/affine augmentation), 'IndicSixPrinted'.
+For Indic the validation set is the last `val_num` images of each class folder (sorted file order).
+Checkpoints go to ./saved_models/: best validation accuracy (*_maxacc.pth), every 5 epochs, and final.
+No random seed is set, so runs differ slightly (the class split itself is fixed).
+Example (Omniglot):
+  python one_shot_de_ae_train.py -df /path/to/omniglot_resized -ds omniglot -lr 0.0001 -ne 25 -bs 80 \
+         -cs 512 -lv 1000 -bvs 90 -bvc 1 -nic 1 128 256 512 -noc 128 256 512 1024
 """
 from torch.autograd import Variable
 import torch
@@ -8,17 +24,13 @@ import torch.nn as nn
 from torchvision import transforms
 from torch.optim.lr_scheduler import StepLR
 import os
-import numpy as np
 import time
-import argparse,sys
+import argparse
 
-#sys.path.insert(0,'..')
-#from disent_auto_encoder_github import DE_AutoEncoder
-#import OneShot_Dataset_new as tg
+
 from models.disent_auto_encoder import DE_AutoEncoder
 from datasets import OneShot_Dataset as tg
 
-#from invert import * #Class to invert an image
 from torchvision.transforms import functional as TF #TF.invert inverts a PIL image (replaces the earlier custom Invert class)
 
 
@@ -29,7 +41,7 @@ def loss_BCE_KLD(recon_x, x, mu_con,logvar_con,mu_sty, logvar_sty,lambda_val,bet
     assert batch_size != 0
     
     #dividing the Beta-VAE loss terms by lambda_val as its loss is much higher than classification loss 
-    #logits will inlude both bce and sigmoid layer together(better than using them seperately)
+    #logits will include both bce and sigmoid layer together(better than using them separately)
     #Here reduction='sum',sums up the losses instead of taking average.As each sample has a set of losses(for each pixel) taking average directly may give a arong value. Hence sum the values and then take the average by dividing it by batch_size.
     BCE = ( nn.functional.binary_cross_entropy_with_logits(recon_x, x, 
     reduction='sum').div(batch_size)) / lambda_val
@@ -72,7 +84,7 @@ def train_autoencoder(dataset,learning_rate,batch_size=50,num_epochs=20):
     print("batch_size",batch_size)
     print("length of dataloader:train",len(dataloaders_dict['train'])*batch_size)
     print("length of dataloader:val",len(dataloaders_dict['val'])*batch_size)
-    print("lambda-_val used for AE loss:",(1/lambda_val))
+    print("lambda_val used for AE loss:",(1/lambda_val))
     # Training loop
     
     start_time = time.time()
@@ -140,17 +152,17 @@ def train_autoencoder(dataset,learning_rate,batch_size=50,num_epochs=20):
                 print("Current Min loss:",min_loss)
                 if(epoch_acc > max_acc):
                     max_acc = epoch_acc
-                    torch.save(imgautoencoder.state_dict(), './models_new/'+dataset_name+'_disent_ae_with_bce_with_logits_'+str(beta_val_sty)+'_con'+str(beta_val_cont)+'_lr'+str(learning_rate)+'_lam_'+str(lambda_val)+'_maxacc.pth') 
+                    torch.save(imgautoencoder.state_dict(), './saved_models/'+dataset_name+'_disent_ae_with_bce_with_logits_'+str(beta_val_sty)+'_con'+str(beta_val_cont)+'_lr'+str(learning_rate)+'_lam_'+str(lambda_val)+'_maxacc.pth') 
                     max_acc_epoch = epoch+1
                 #elif(epoch_acc == max_acc):
-                    #torch.save(imgautoencoder.state_dict(), './models_new/'+dataset_name+'_unique_class'+'_disent_ae_corrected_with_bce_with_logits_two_clslayer_wo_bias_betasty_'+str(beta_val_sty)+'_con'+str(beta_val_cont)+'_with_relu_maxpool_4bn_lr'+str(learning_rate)+'_lam_'+str(lambda_val)+'_cs_'+str(code_size[0])+'_'+str(code_size[1])+'_step_'+ str(step_size) +'_'+str(epoch+1)+'ep.pth')
+                    #torch.save(imgautoencoder.state_dict(), './saved_models/'+dataset_name+'_unique_class'+'_disent_ae_corrected_with_bce_with_logits_two_clslayer_wo_bias_betasty_'+str(beta_val_sty)+'_con'+str(beta_val_cont)+'_with_relu_maxpool_4bn_lr'+str(learning_rate)+'_lam_'+str(lambda_val)+'_cs_'+str(code_size[0])+'_'+str(code_size[1])+'_step_'+ str(step_size) +'_'+str(epoch+1)+'ep.pth')
                 print('current max accuracy{} in {}'.format(max_acc,max_acc_epoch))
 
             else:
                   train_loss_history.append(epoch_loss)
             
             if(((epoch+1)%5) == 0):
-                torch.save(imgautoencoder.state_dict(), './models_new/'+dataset_name+'_disent_ae_with_bce_with_logits_'+str(beta_val_sty)+'_con'+str(beta_val_cont)+'_lr'+str(learning_rate)+'_lam_'+str(lambda_val)+'_'+str(epoch+1)+'ep.pth')
+                torch.save(imgautoencoder.state_dict(), './saved_models/'+dataset_name+'_disent_ae_with_bce_with_logits_'+str(beta_val_sty)+'_con'+str(beta_val_cont)+'_lr'+str(learning_rate)+'_lam_'+str(lambda_val)+'_'+str(epoch+1)+'ep.pth')
 
             #print(p.key_averages().table(sort_by="self_cpu_time_total"))
         # To adjust the learning rate by scheduler
@@ -179,9 +191,12 @@ def train_autoencoder(dataset,learning_rate,batch_size=50,num_epochs=20):
     
     
 
-if __name__ == "__main__":  
+   
+
+
     
-    parser = argparse.ArgumentParser(description='Training with Omniglot datase')
+if __name__ == "__main__":  # needed so DataLoader worker processes (spawn/forkserver start) do not re-run the script
+    parser = argparse.ArgumentParser(description='Training the disentangled auto-encoder')
     parser.add_argument('-df','--data_path', help='data path',required = True,  type=str)
     parser.add_argument('-nc','--num_classes', help='Number of classes', default = 1200, type=int)
     #parser.add_argument('-nc','--num_classes', help='Number of classes', default = 3856, type=int)
@@ -201,6 +216,7 @@ if __name__ == "__main__":
 
 
     args = vars(parser.parse_args())
+    
     is_all=is_testclass=False
     datafilepath=args['data_path']
     code_size=args['code_size']
@@ -233,47 +249,41 @@ if __name__ == "__main__":
         input_size =28
         cls_name_folders = 2
         no_of_in_channels[0] = 1
-
+    
         data_trans = transforms.Compose([
             transforms.Resize(input_size),
             transforms.ToTensor()
         ])
         data_trans_omniglot_daug_rrot =  transforms.Compose([
             transforms.Resize(input_size),
-            #Invert(),
             transforms.Lambda(TF.invert),
             #transforms.RandomRotation((-20,-20)),#((-1,-5)),
             transforms.RandomRotation((-10,-2)),#((-1,-5)),
-            #Invert(),
             transforms.Lambda(TF.invert),
             transforms.ToTensor()
         ])
-
+    
         data_trans_omniglot_daug_lrot =  transforms.Compose([
                 transforms.Resize(input_size),
-                #Invert(),
                 transforms.Lambda(TF.invert),
                 #transforms.RandomRotation((+10,+10)),#((-1,-5)),
                 transforms.RandomRotation((+2,+10)),#((-1,-5)),
-                #Invert(),
                 transforms.Lambda(TF.invert),
                 transforms.ToTensor()
             ])
-
+    
         data_trans_omniglot_daug_aff =  transforms.Compose([
                 transforms.Resize(input_size),
-                #Invert(),
                 transforms.Lambda(TF.invert),
                 #transforms.Grayscale(),
                 transforms.RandomAffine(10,shear=(1.5,2.5)),
-                #Invert(),
                 transforms.Lambda(TF.invert),
                 transforms.ToTensor()
             ])
 
 
 
-    elif(dataset_name == 'IndicSixPrinted'):
+    elif(dataset_name in ('IndicSixPrinted','IndicSixPrintedLess')):
         dataset_class = tg.IndicSixPrintedDataset
         num_classes = 800#Total 1241
         num_classes_split = 800 #Train and test classes are in the same folder hence need  the split point
@@ -284,12 +294,12 @@ if __name__ == "__main__":
         input_size = 50
         cls_name_folders = 2
         no_of_in_channels[0] = 3
-
+        
         data_trans = transforms.Compose([
             transforms.Resize((input_size,input_size)),
             transforms.ToTensor()
            ]) 
-
+    
     if(no_of_datafolders ==2): 
         train_character_folders,test_character_folders,train_class_labels_dict,test_class_labels_dict = dataset_class.get_folders(datafilepath,num_classes_split)
         #Added to set shuffle as false to take only the last few images as validation set.
@@ -322,16 +332,16 @@ if __name__ == "__main__":
         #train_autoencoder_model2(datasets,learning_rate,batch_size,num_epochs)
             datasets={x:dataset_plain[x] + dataset_rrot[x] + dataset_lrot[x] + dataset_aff[x] for x in ['train','val']} 
             #datasets={x:dataset_plain[x] for x in ['train','val']} 
-
+    
         else: #For datsets without augmentation
-
+        
             datasets = {x:dataset_class(task_train,split=x,transforms=data_trans) for x in ['train','val']}
-
+        
     print("dataset length:",len(datasets['train']),len(datasets['val']))
     print("Step size of learning rate:",step_size)
 
-    print(no_of_in_channels,no_of_out_channels)
-    print(code_size)
+    #print(no_of_in_channels,no_of_out_channels)
+    print("code size:",code_size)
     # Instantiate model
     imgautoencoder = DE_AutoEncoder(code_size,input_size,no_of_in_channels,no_of_out_channels,num_classes,is_max_pool_after_last_conv=1,is_same_style_dim=1)
 
@@ -354,8 +364,8 @@ if __name__ == "__main__":
 
 
 
-    os.makedirs('./models_new', exist_ok=True)
-    filename='./models_new/'+ dataset_name +'_unique_class'+'_disent_ae_with_bce_with_logits_'+str(beta_val_sty)+'_con'+str(beta_val_cont)+'_lr'+str(learning_rate)+'_lam_'+str(lambda_val)+'_'+str(num_epochs)+'ep.pth'
+    os.makedirs('./saved_models', exist_ok=True)
+    filename='./saved_models/'+ dataset_name +'_unique_class'+'_disent_ae_with_bce_with_logits_'+str(beta_val_sty)+'_con'+str(beta_val_cont)+'_lr'+str(learning_rate)+'_lam_'+str(lambda_val)+'_'+str(num_epochs)+'ep.pth'
 
 
     train_autoencoder(datasets,learning_rate,batch_size,num_epochs)

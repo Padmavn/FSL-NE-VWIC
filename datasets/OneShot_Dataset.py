@@ -1,9 +1,25 @@
-# code is based on https://github.com/floodsung/LearningToCompare_FSL/blob/master/omniglot/task_generator.py
+# The task generator (DatasetTask / FewShotDataset) is adapted from
+# https://github.com/floodsung/LearningToCompare_FSL (Flood Sung, MIT License),
+# which is itself based on https://github.com/katerakelly/pytorch-maml.
+# Portions Copyright (c) 2018 Flood Sung - see the LICENSE file in the repository root.
 """
-Single Python file to handle all datasets.
-Task generator part is commin to all datasets
-This customdataset is created to assign class labels as the numeric part of the class names.
-Otherwise the classlabel will be assigned randomly according to the order used by the data loader
+Dataset preparation and few-shot task generation.
+
+A single module shared across several projects. It provides:
+  * DatasetTask      - generic task generator (meta-train / meta-test splits,
+                       k-way sampling, support/query or train/validation splits).
+  * FewShotDataset   - base PyTorch Dataset; one subclass per dataset
+                       (e.g. OmniglotDataset, IndicSixPrintedDataset, ...).
+  * Helper utilities for class-label mapping (ZSL / GZSL) and CSV-based datasets.
+
+Class labels are derived from the class folder names (e.g. the numeric part of
+the name), so they do not depend on the order in which the DataLoader reads the folders.
+
+Datasets used in the paper accompanying this repository:
+  * Omniglot            -> OmniglotDataset
+  * IndicScript (Indic six-script printed dataset) -> IndicSixPrintedDataset
+The remaining dataset classes belong to the same module (shared with other
+projects) and are not needed to reproduce this paper.
 """
 import torch
 import random
@@ -814,7 +830,7 @@ class MalayalamCSVDataset(Dataset):
             train_class_label_dict = build_class_to_idx(seen_classes)
             test_class_label_dict = build_class_to_idx(test_classes_for_mapping)
         else:
-            raise ValueError("mode must be 'zsl','gzsl' or 'sup'")
+            raise ValueError("mode must be 'zsl', 'gzsl' or 'sup'")
 
         
 

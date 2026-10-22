@@ -1,0 +1,7 @@
+torch==1.13.1+cu116
+torchvision==0.14.1+cu116  # used for transforms in the training/testing scripts
+numpy==1.18.5
+scipy==1.5.0               # confidence interval in the test script
+Pillow==8.4.0
+pandas==1.0.5              # only needed for the CSV-based Malayalam dataset class
+torchsummary==1.5.1        # optional: prints the model summary at the start of training
